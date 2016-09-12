@@ -76,9 +76,9 @@ function combineQuery() {
     }
   }
   // update existing rows
-  sql += ' upsert AS ( UPDATE api_test o SET audio_guid=n.audio_guid, latitude=n.latitude, longitude=n.longitude, begins_at=n.begins_at, ends_at=n.ends_at, type=n.type, name=n.name, confidence=n.confidence, the_geom=n.the_geom FROM n WHERE o.event_guid = n.event_guid RETURNING o.event_guid )';
+  sql += ' upsert AS ( UPDATE ' + env.CARTODB_TABLE + ' o SET audio_guid=n.audio_guid, latitude=n.latitude, longitude=n.longitude, begins_at=n.begins_at, ends_at=n.ends_at, type=n.type, name=n.name, confidence=n.confidence, the_geom=n.the_geom FROM n WHERE o.event_guid = n.event_guid RETURNING o.event_guid )';
   // insert missing rows
-  sql += ' INSERT INTO api_test (event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) SELECT n.event_guid, n.audio_guid, n.latitude, n.longitude, n.begins_at, n.ends_at, n.type, n.name, n.confidence, n.the_geom FROM n WHERE n.event_guid NOT IN ( SELECT event_guid FROM upsert );';
+  sql += ' INSERT INTO ' + env.CARTODB_TABLE + ' (event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) SELECT n.event_guid, n.audio_guid, n.latitude, n.longitude, n.begins_at, n.ends_at, n.type, n.name, n.confidence, n.the_geom FROM n WHERE n.event_guid NOT IN ( SELECT event_guid FROM upsert );';
 
   return sql;
 }

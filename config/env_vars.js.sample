@@ -1,6 +1,7 @@
 exports.env = {
 
   CARTODB_USER: "",
-  CARTODB_KEY: ""
+  CARTODB_KEY: "",
+  CARTODB_TABLE: ""
 
 };
