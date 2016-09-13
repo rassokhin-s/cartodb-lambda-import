@@ -5,7 +5,7 @@ if (fs.existsSync("./config/env_vars.js")) {
   var env = require("./config/env_vars.js").env;
 }
 else {
-  console.error("Config file doesn't exist.");
+  console.error("Config file doesn't exist. Exiting");
   return;
 }
 
@@ -52,6 +52,10 @@ var jsonData = {
   ]
 };
 
+/**
+ * Creates query for importing data
+ * @returns {string} - sql query string
+ */
 function combineQuery() {
   var sql = 'WITH n(event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) AS (VALUES ';
 
@@ -83,12 +87,53 @@ function combineQuery() {
   return sql;
 }
 
-var query = combineQuery();
+/**
+ * Creates table with name from config
+ * @returns {object} Custom promise object
+ */
+function createTable() {
+  console.log('Executing table creation');
+  var tableName = env.CARTODB_TABLE,
+      query = "CREATE TABLE " + tableName + " (cartodb_id integer, the_geom geometry, audio_guid text, begins_at date, confidence float, ends_at date, event_guid text, latitude float, longitude float, name text, type text); SELECT cdb_cartodbfytable('" + tableName + "');";
+  return sql.execute(query)
+    .done(function(data) {
+      console.log('Table creation finished successfully:', data);
+    })
+    .error(function (err) {
+      console.log('Error in process of table creation', err);
+    });
+}
 
-sql.execute(query)
+/**
+ * Imports data into Cartodb table
+ */
+function executeImport() {
+  console.log('Executing import');
+  var query = combineQuery();
+  sql.execute(query)
+    .done(function(data) {
+      console.log('Import finished successfully:', data);
+    })
+    .error(function (err) {
+      console.log('Error in process of import', err);
+    });
+}
+
+console.log('Checking if table', env.CARTODB_TABLE, 'exists');
+sql.execute("SELECT to_regclass('" + env.CARTODB_TABLE + "');")
   .done(function(data) {
-    console.log('Success:', data);
+    if (data.rows[0].to_regclass === null) {
+      console.log('Table doesn\'t exist.');
+      createTable()
+        .done(function() {
+          executeImport();
+        });
+    }
+    else {
+      console.log('Table exists.');
+      executeImport();
+    }
   })
-  .error(function (err) {
-    console.log('Error', err);
+  .error(function(err) {
+    console.log('Table check error. Exiting.', err);
   });
