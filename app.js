@@ -1,4 +1,5 @@
 var CartoDB = require('cartodb'),
+    AWS = require('aws-sdk'),
     fs = require("fs");
 
 if (fs.existsSync("./config/env_vars.js")) {
@@ -9,11 +10,16 @@ else {
   return;
 }
 
+// Amazon s3 service object
+var s3 = new AWS.S3();
+
+// CartoDB sql service object
 var sql = new CartoDB.SQL({
   user: env.CARTODB_USER,
   api_key: env.CARTODB_KEY
 });
 
+// temporary json data
 var jsonData = {
   events: [
     {
@@ -52,88 +58,140 @@ var jsonData = {
   ]
 };
 
-/**
- * Creates query for importing data
- * @returns {string} - sql query string
- */
-function combineQuery() {
-  var sql = 'WITH n(event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) AS (VALUES ';
+// AWS Lambda default  handler which will be called on Lamda function start
+// you need to specify `Handler` attribute in Lambda configuration as following:
+// filename + this method name - `app.myHandler`
+exports.myHandler = function(event, context, callback) {
 
-  for (var i = 0; i < jsonData.events.length; i++) {
-    var json = jsonData.events[i];
-    sql += "(" +
-      "'" + json.event_guid +  "', " +
-      "'" + json.audio_guid + "', " +
-            json.latitude + ", " +
-            json.longitude + ", " +
-      "to_timestamp('" + json.begins_at + "', 'YYYY-MM-DD HH24:MI:SS'), " +
-      "to_timestamp('" + json.ends_at + "', 'YYYY-MM-DD HH24:MI:SS'), '" +
-            json.type + "', " +
-      "'" + json.name + "', " +
-            json.confidence + ", " +
-      "ST_SetSRID(ST_Point(" + json.longitude + "," + json.latitude + "),4326))";
-    if (i !== jsonData.events.length-1) {
-      sql += ', '
-    }
-    else {
-      sql += '), '
-    }
+  // temporary date object to save in json file
+  var date = new Date();
+
+  /**
+   * Get json file from S3 storage, parse it and get last time sync and status
+   */
+  function readStatus() {
+    s3.getObject({
+      Bucket: env.S3_BUCKET,
+      Key: env.S3_JSON_FILE_KEY
+    }, function(err, data) {
+      if (!err) {
+        var fileContents = data.Body.toString();
+        var json = JSON.parse(fileContents);
+        console.log('\n\n reading prev status:', json, '\n\n');
+      }
+    });
   }
-  // update existing rows
-  sql += ' upsert AS ( UPDATE ' + env.CARTODB_TABLE + ' o SET audio_guid=n.audio_guid, latitude=n.latitude, longitude=n.longitude, begins_at=n.begins_at, ends_at=n.ends_at, type=n.type, name=n.name, confidence=n.confidence, the_geom=n.the_geom FROM n WHERE o.event_guid = n.event_guid RETURNING o.event_guid )';
-  // insert missing rows
-  sql += ' INSERT INTO ' + env.CARTODB_TABLE + ' (event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) SELECT n.event_guid, n.audio_guid, n.latitude, n.longitude, n.begins_at, n.ends_at, n.type, n.name, n.confidence, n.the_geom FROM n WHERE n.event_guid NOT IN ( SELECT event_guid FROM upsert );';
 
-  return sql;
-}
+  /**
+   * Saves current import status with time value
+   * @param type - status type
+   */
+  function saveStatus(type) {
+    s3.upload({
+      Bucket: env.S3_BUCKET,
+      Key: env.S3_JSON_FILE_KEY,
+      Body: JSON.stringify({
+        time: date.toISOString(),
+        status: type
+      }),
+      ContentType: 'application/json',
+      CacheControl: 'no-cache',
+      ACL: 'aws-exec-read'
+    }, function(err, data) {
+      if (err) console.log(err);
+      else console.log("Successfully uploaded status data to S3 bucket");
+    });
+  }
 
-/**
- * Creates table with name from config
- * @returns {object} Custom promise object
- */
-function createTable() {
-  console.log('Executing table creation');
-  var tableName = env.CARTODB_TABLE,
-      query = "CREATE TABLE " + tableName + " (cartodb_id integer, the_geom geometry, audio_guid text, begins_at date, confidence float, ends_at date, event_guid text, latitude float, longitude float, name text, type text); SELECT cdb_cartodbfytable('" + tableName + "');";
-  return sql.execute(query)
-    .done(function(data) {
-      console.log('Table creation finished successfully:', data);
+  /**
+   * Creates query for importing data
+   * @returns {string} - sql query string
+   */
+  function combineQuery() {
+    var sql = 'WITH n(event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) AS (VALUES ';
+
+    for (var i = 0; i < jsonData.events.length; i++) {
+      var json = jsonData.events[i];
+      sql += "(" +
+        "'" + json.event_guid +  "', " +
+        "'" + json.audio_guid + "', " +
+              json.latitude + ", " +
+              json.longitude + ", " +
+        "to_timestamp('" + json.begins_at + "', 'YYYY-MM-DD HH24:MI:SS'), " +
+        "to_timestamp('" + json.ends_at + "', 'YYYY-MM-DD HH24:MI:SS'), '" +
+              json.type + "', " +
+        "'" + json.name + "', " +
+              json.confidence + ", " +
+        "ST_SetSRID(ST_Point(" + json.longitude + "," + json.latitude + "),4326))";
+      if (i !== jsonData.events.length-1) {
+        sql += ', '
+      }
+      else {
+        sql += '), '
+      }
+    }
+    // update existing rows
+    sql += ' upsert AS ( UPDATE ' + env.CARTODB_TABLE + ' o SET audio_guid=n.audio_guid, latitude=n.latitude, longitude=n.longitude, begins_at=n.begins_at, ends_at=n.ends_at, type=n.type, name=n.name, confidence=n.confidence, the_geom=n.the_geom FROM n WHERE o.event_guid = n.event_guid RETURNING o.event_guid )';
+    // insert missing rows
+    sql += ' INSERT INTO ' + env.CARTODB_TABLE + ' (event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) SELECT n.event_guid, n.audio_guid, n.latitude, n.longitude, n.begins_at, n.ends_at, n.type, n.name, n.confidence, n.the_geom FROM n WHERE n.event_guid NOT IN ( SELECT event_guid FROM upsert );';
+
+    return sql;
+  }
+
+  /**
+   * Creates table with name from config
+   * @returns {object} Custom promise object
+   */
+  function createTable() {
+    console.log('Executing table creation');
+    var tableName = env.CARTODB_TABLE,
+        query = "CREATE TABLE " + tableName + " (cartodb_id integer, the_geom geometry, audio_guid text, begins_at date, confidence float, ends_at date, event_guid text, latitude float, longitude float, name text, type text); SELECT cdb_cartodbfytable('" + tableName + "');";
+    return sql.execute(query)
+      .done(function(data) {
+        console.log('Table creation finished successfully:', data);
+      })
+      .error(function (err) {
+        console.log('Error in process of table creation', err);
+        saveStatus('error');
+      });
+  }
+
+  /**
+   * Imports data into Cartodb table
+   */
+  function executeImport() {
+    console.log('Executing import');
+    var query = combineQuery();
+    sql.execute(query)
+      .done(function(data) {
+        console.log('Import finished successfully:', data);
+        saveStatus('success');
+      })
+      .error(function (err) {
+        console.log('Error in process of import', err);
+        saveStatus('error');
+      });
+  }
+
+  readStatus();
+
+  console.log('Checking if table', env.CARTODB_TABLE, 'exists');
+  sql.execute("SELECT to_regclass('" + env.CARTODB_TABLE + "');")
+    .done(function (data) {
+      if (data.rows[0].to_regclass === null) {
+        console.log('Table doesn\'t exist.');
+        createTable()
+          .done(function () {
+            executeImport();
+          });
+      }
+      else {
+        console.log('Table exists.');
+        executeImport();
+      }
     })
     .error(function (err) {
-      console.log('Error in process of table creation', err);
+      console.log('Table check error. Exiting.', err);
+      saveStatus('error');
     });
-}
-
-/**
- * Imports data into Cartodb table
- */
-function executeImport() {
-  console.log('Executing import');
-  var query = combineQuery();
-  sql.execute(query)
-    .done(function(data) {
-      console.log('Import finished successfully:', data);
-    })
-    .error(function (err) {
-      console.log('Error in process of import', err);
-    });
-}
-
-console.log('Checking if table', env.CARTODB_TABLE, 'exists');
-sql.execute("SELECT to_regclass('" + env.CARTODB_TABLE + "');")
-  .done(function(data) {
-    if (data.rows[0].to_regclass === null) {
-      console.log('Table doesn\'t exist.');
-      createTable()
-        .done(function() {
-          executeImport();
-        });
-    }
-    else {
-      console.log('Table exists.');
-      executeImport();
-    }
-  })
-  .error(function(err) {
-    console.log('Table check error. Exiting.', err);
-  });
+};

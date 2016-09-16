@@ -2,6 +2,9 @@ exports.env = {
 
   CARTODB_USER: "",
   CARTODB_KEY: "",
-  CARTODB_TABLE: ""
+  CARTODB_TABLE: "",
+
+  S3_BUCKET: "lambda-import-data",
+  S3_JSON_FILE_KEY: "last-sync.json"
 
 };
