@@ -10,6 +10,10 @@
   "author": "Stanislav Rassokhin <sr.rassokhin@gmail.com>",
   "license": "ISC",
   "dependencies": {
-    "cartodb": "^0.5.1"
+    "cartodb": "^0.5.1",
+    "promise": "^7.1.1"
+  },
+  "devDependencies": {
+    "aws-sdk": "^2.6.4"
   }
 }

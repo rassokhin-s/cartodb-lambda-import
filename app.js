@@ -1,6 +1,7 @@
 var CartoDB = require('cartodb'),
     AWS = require('aws-sdk'),
-    fs = require("fs");
+    fs = require("fs"),
+    Promise = require('promise');
 
 if (fs.existsSync("./config/env_vars.js")) {
   var env = require("./config/env_vars.js").env;
@@ -68,17 +69,25 @@ exports.myHandler = function(event, context, callback) {
 
   /**
    * Get json file from S3 storage, parse it and get last time sync and status
+   * @returns {Object} - Promise
    */
   function readStatus() {
-    s3.getObject({
-      Bucket: env.S3_BUCKET,
-      Key: env.S3_JSON_FILE_KEY
-    }, function(err, data) {
-      if (!err) {
-        var fileContents = data.Body.toString();
-        var json = JSON.parse(fileContents);
-        console.log('\n\n reading prev status:', json, '\n\n');
-      }
+    console.log('Checking last sync status');
+    return new Promise(function (resolve, reject) {
+      s3.getObject({
+        Bucket: env.S3_BUCKET,
+        Key: env.S3_JSON_FILE_KEY
+      }, function(err, data) {
+        if (!err) {
+          var fileContents = data.Body.toString();
+          var json = JSON.parse(fileContents);
+          console.log('\n\n reading prev status:', json, '\n\n');
+          resolve();
+        }
+        else {
+          reject(err);
+        }
+      });
     });
   }
 
@@ -98,14 +107,15 @@ exports.myHandler = function(event, context, callback) {
       CacheControl: 'no-cache',
       ACL: 'aws-exec-read'
     }, function(err, data) {
-      if (err) console.log(err);
-      else console.log("Successfully uploaded status data to S3 bucket");
+      if (!err) {
+        console.log("Successfully uploaded status data to S3 bucket");
+      }
     });
   }
 
   /**
    * Creates query for importing data
-   * @returns {string} - sql query string
+   * @returns {string} - query
    */
   function combineQuery() {
     var sql = 'WITH n(event_guid, audio_guid, latitude, longitude, begins_at, ends_at, type, name, confidence, the_geom) AS (VALUES ';
@@ -113,17 +123,17 @@ exports.myHandler = function(event, context, callback) {
     for (var i = 0; i < jsonData.events.length; i++) {
       var json = jsonData.events[i];
       sql += "(" +
-        "'" + json.event_guid +  "', " +
-        "'" + json.audio_guid + "', " +
-              json.latitude + ", " +
-              json.longitude + ", " +
-        "to_timestamp('" + json.begins_at + "', 'YYYY-MM-DD HH24:MI:SS'), " +
-        "to_timestamp('" + json.ends_at + "', 'YYYY-MM-DD HH24:MI:SS'), '" +
-              json.type + "', " +
-        "'" + json.name + "', " +
-              json.confidence + ", " +
-        "ST_SetSRID(ST_Point(" + json.longitude + "," + json.latitude + "),4326))";
-      if (i !== jsonData.events.length-1) {
+      "'" + json.event_guid + "', " +
+      "'" + json.audio_guid + "', " +
+      json.latitude + ", " +
+      json.longitude + ", " +
+      "to_timestamp('" + json.begins_at + "', 'YYYY-MM-DD HH24:MI:SS'), " +
+      "to_timestamp('" + json.ends_at + "', 'YYYY-MM-DD HH24:MI:SS'), '" +
+      json.type + "', " +
+      "'" + json.name + "', " +
+      json.confidence + ", " +
+      "ST_SetSRID(ST_Point(" + json.longitude + "," + json.latitude + "),4326))";
+      if (i !== jsonData.events.length - 1) {
         sql += ', '
       }
       else {
@@ -139,59 +149,90 @@ exports.myHandler = function(event, context, callback) {
   }
 
   /**
+   * Check if required table exists
+   * @returns {Object} - Promise
+   */
+  function checkTable() {
+    return new Promise(function (resolve, reject) {
+      console.log('Checking if table', env.CARTODB_TABLE, 'exists');
+      sql.execute("SELECT to_regclass('" + env.CARTODB_TABLE + "');")
+        .done(function (data) {
+          if (data.rows[0].to_regclass === null) {
+            console.log("Table doesn't exist.");
+            resolve(false);
+          }
+          else {
+            console.log('Table exists.');
+            resolve(true);
+          }
+        })
+        .error(function (err) {
+          console.log('Table check error. Exiting.', err);
+          reject(err);
+        });
+    });
+  }
+
+  /**
    * Creates table with name from config
-   * @returns {object} Custom promise object
+   * @returns {Object} - Promise
    */
   function createTable() {
     console.log('Executing table creation');
-    var tableName = env.CARTODB_TABLE,
-        query = "CREATE TABLE " + tableName + " (cartodb_id integer, the_geom geometry, audio_guid text, begins_at date, confidence float, ends_at date, event_guid text, latitude float, longitude float, name text, type text); SELECT cdb_cartodbfytable('" + tableName + "');";
-    return sql.execute(query)
-      .done(function(data) {
-        console.log('Table creation finished successfully:', data);
-      })
-      .error(function (err) {
-        console.log('Error in process of table creation', err);
-        saveStatus('error');
-      });
+    return new Promise(function (resolve, reject) {
+      var tableName = env.CARTODB_TABLE,
+          query = "CREATE TABLE " + tableName + " (cartodb_id integer, the_geom geometry, audio_guid text, begins_at date, confidence float, ends_at date, event_guid text, latitude float, longitude float, name text, type text); SELECT cdb_cartodbfytable('" + tableName + "');";
+      sql.execute(query)
+        .done(function(data) {
+          console.log('Table creation finished successfully:', data);
+          resolve(data);
+        })
+        .error(function (err) {
+          console.log('Error in process of table creation', err);
+          reject(err);
+        });
+    });
+
   }
 
   /**
    * Imports data into Cartodb table
+   * @returns {Object} - Promise
    */
   function executeImport() {
     console.log('Executing import');
-    var query = combineQuery();
-    sql.execute(query)
-      .done(function(data) {
-        console.log('Import finished successfully:', data);
-        saveStatus('success');
-      })
-      .error(function (err) {
-        console.log('Error in process of import', err);
-        saveStatus('error');
-      });
+    return new Promise(function (resolve, reject) {
+      var query = combineQuery();
+      sql.execute(query)
+        .done(function(data) {
+          console.log('Import finished successfully:', data);
+          resolve();
+        })
+        .error(function (err) {
+          console.log('Error in process of import', err);
+          reject(err);
+        });
+    });
   }
 
-  readStatus();
-
-  console.log('Checking if table', env.CARTODB_TABLE, 'exists');
-  sql.execute("SELECT to_regclass('" + env.CARTODB_TABLE + "');")
-    .done(function (data) {
-      if (data.rows[0].to_regclass === null) {
-        console.log('Table doesn\'t exist.');
-        createTable()
-          .done(function () {
-            executeImport();
-          });
+  readStatus()
+    .then(checkTable)
+    .then(function(exists) {
+      if (exists) {
+        return executeImport();
       }
       else {
-        console.log('Table exists.');
-        executeImport();
+        return createTable()
+          .then(function() {
+            return executeImport();
+          });
       }
     })
-    .error(function (err) {
-      console.log('Table check error. Exiting.', err);
+    .then(function() {
+      saveStatus('success');
+    })
+    .catch(function(err) {
+      console.log('Error', err);
       saveStatus('error');
     });
 };
