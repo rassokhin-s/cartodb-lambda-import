@@ -1,7 +1,7 @@
+var fs = require('fs');
 var gulp = require('gulp');
 var zip = require('gulp-zip');
 var del = require('del');
-var install = require('gulp-install');
 var runSequence = require('run-sequence');
 var awsLambda = require("node-aws-lambda");
 
@@ -17,13 +17,25 @@ gulp.task('clean:zip', function() {
 
 gulp.task('js', function() {
   return gulp.src(['app.js', '*config/env_vars.js'])
-    .pipe(gulp.dest('dist/'));
+    .pipe(gulp.dest('dist'));
 });
 
+// Function which get names of production dependencies in package.json file and copies these directories into
+// dist directory
 gulp.task('node-mods', function() {
-  return gulp.src('./package.json')
-    .pipe(gulp.dest('dist/'))
-    .pipe(install({production: true}));
+  // parsed object of package.json file
+  var packageJsonParsed = JSON.parse(fs.readFileSync('./package.json')),
+    // object to store src paths to required node modules
+      srcPaths = [];
+  // if there are any production dependencies them combine src paths for them
+  if (packageJsonParsed.dependencies && Object.keys(packageJsonParsed.dependencies).length) {
+    var dependencies = Object.keys(packageJsonParsed.dependencies);
+    dependencies.forEach(function(dependency) {
+      srcPaths.push('./node_modules/' + dependency + '/**/*');
+    });
+  }
+  return gulp.src(srcPaths, {base: './'})
+    .pipe(gulp.dest('dist'));
 });
 
 gulp.task('zip', function() {
