@@ -68,10 +68,60 @@ exports.myHandler = function(event, context, callback) {
   var date = new Date();
 
   /**
+   * Check if bucket, where status file is located exists
+   * @returns {Promise} - Promise
+   */
+  function checkBucket() {
+    return new Promise(function (resolve, reject) {
+      console.log('Checking bucket with name:', env.S3_BUCKET);
+      s3.headBucket({
+        Bucket: env.S3_BUCKET
+      }, function(err, data) {
+        if (!err) {
+          console.log('Bucket exists');
+          resolve(true);
+        }
+        else if (err.code === 'NotFound') {
+          console.log('Bucket not found');
+          resolve(false);
+        }
+        else {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
+   * Creates bucket with specified name
+   * @returns {Promise} - Promise
+   */
+  function createBucket() {
+    return new Promise(function (resolve, reject) {
+      console.log('Creating bucket with name:', env.S3_BUCKET);
+      s3.createBucket({
+        Bucket: env.S3_BUCKET,
+        ACL: 'private',
+        CreateBucketConfiguration: {
+          LocationConstraint: env.AWS_LOCATION
+        }
+      }, function(err, data) {
+        if (!err) {
+          console.log('Bucket created');
+          resolve();
+        }
+        else {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
    * Get json file from S3 storage, parse it and get last time sync and status
    * @returns {Object} - Promise
    */
-  function readStatus() {
+  function checkStatus() {
     console.log('Checking last sync status');
     return new Promise(function (resolve, reject) {
       s3.getObject({
@@ -81,8 +131,12 @@ exports.myHandler = function(event, context, callback) {
         if (!err) {
           var fileContents = data.Body.toString();
           var json = JSON.parse(fileContents);
-          console.log('\n\n reading prev status:', json, '\n\n');
-          resolve();
+          console.log('Last sync status:', json);
+          resolve(true);
+        }
+        else if (err.code === 'NoSuchKey') {
+          console.log('Status file does not exist');
+          resolve(false)
         }
         else {
           reject(err);
@@ -96,6 +150,7 @@ exports.myHandler = function(event, context, callback) {
    * @param type - status type
    */
   function saveStatus(type) {
+    console.log('Saving current import status to S3');
     s3.upload({
       Bucket: env.S3_BUCKET,
       Key: env.S3_JSON_FILE_KEY,
@@ -215,7 +270,18 @@ exports.myHandler = function(event, context, callback) {
     });
   }
 
-  readStatus()
+  checkBucket()
+    .then(function(exists) {
+      if (exists) {
+        return checkStatus();
+      }
+      else {
+        return createBucket()
+          .then(function() {
+            return checkStatus();
+          })
+      }
+    })
     .then(checkTable)
     .then(function(exists) {
       if (exists) {

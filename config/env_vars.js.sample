@@ -5,6 +5,8 @@ exports.env = {
   CARTODB_TABLE: "",
 
   S3_BUCKET: "lambda-import-data",
-  S3_JSON_FILE_KEY: "last-sync.json"
+  S3_JSON_FILE_KEY: "last-sync.json",
+
+  AWS_LOCATION: 'us-west-2'
 
 };
